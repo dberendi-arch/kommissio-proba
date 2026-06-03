@@ -41,7 +41,7 @@ details[open] summary::before{content:"▼ "}
 .stat{background:#fff;border:1px solid #dce3ec;border-radius:6px;padding:10px;text-align:center}
 .stat .n{font-size:24px;font-weight:700;color:#1f4e79}
 .stat .l{font-size:10px;color:#8a9aaa;margin-top:1px}
-.lb{background:#18222e;color:#90afc8;font-family:Consolas,monospace;font-size:11px;border-radius:6px;padding:10px 14px;max-height:200px;overflow-y:auto;line-height:1.7}
+.lb{background:#18222e;color:#90afc8;font-family:Consolas,monospace;font-size:11px;border-radius:6px;padding:10px 14px;max-height:220px;overflow-y:auto;line-height:1.7}
 .lok{color:#5dbf7a}.lerr{color:#e07a7a}.lwarn{color:#e8c46a}.linf{color:#60a8d8}
 .hidden{display:none}
 </style>
@@ -57,7 +57,7 @@ details[open] summary::before{content:"▼ "}
         <input type="file" accept=".xlsx,.xls" onchange="loadK(this,'hu')">
         <div class="ico">&#127978;</div>
         <div class="lbl">HU bolt + raktár készlet</div>
-        <div class="sub">HU_bolt___raktar_keszlet_*.xls<br>2 sheet: boltok + kozponti raktar</div>
+        <div class="sub">HU_bolt___raktar_keszlet_*.xls</div>
       </div>
       <div class="dz" id="dz-sk">
         <input type="file" accept=".xlsx,.xls" onchange="loadK(this,'sk')">
@@ -122,6 +122,11 @@ const P3=["NYÍREGYHÁZA","BÉKÉSCSABA","PÓLUS","MOM PARK","GOBUDA","ÓBUDA","
 const ALL=[...P1,...P2,...P3];
 const F={};let RWB=null;
 
+// Ismert oszlopnevek a fájlokból
+const CIKK_COL="Cikkszám";
+const MENNY_COL="Készlet menny.";
+const BOLT_COL="Bolt";
+
 function lg(m,c){const e=document.getElementById('lb');const d=document.createElement('div');if(c)d.className=c;d.textContent=m;e.appendChild(d);e.scrollTop=e.scrollHeight;}
 function ss(s){document.getElementById('stxt').textContent=s;}
 
@@ -130,12 +135,13 @@ function loadK(inp,k){
   const r=new FileReader();
   r.onload=e=>{
     try{
-      F[k]={wb:XLSX.read(e.target.result,{type:'array',cellText:false,cellDates:false}),name:f.name};
+      const wb=XLSX.read(e.target.result,{type:'array',cellText:false});
+      F[k]={wb,name:f.name};
       const dz=document.getElementById('dz-'+k);
       dz.classList.add('ok');
       dz.querySelector('.lbl').textContent=f.name;
-      dz.querySelector('.sub').innerHTML='<span class="okb">&#10003; betöltve — '+F[k].wb.SheetNames.length+' sheet: '+F[k].wb.SheetNames.join(', ')+'</span>';
-      lg('✓ '+f.name+' | Sheetek: '+F[k].wb.SheetNames.join(', '),'lok');
+      dz.querySelector('.sub').innerHTML='<span class="okb">&#10003; '+wb.SheetNames.join(' | ')+'</span>';
+      lg('✓ '+f.name+' → sheetek: '+wb.SheetNames.join(', '),'lok');
       if(F.hu&&F.sk){document.getElementById('runBtn').disabled=false;ss('Kész a feldolgozásra');}
     }catch(e){lg('✗ '+f.name+': '+e.message,'lerr');}
   };
@@ -155,21 +161,6 @@ function loadX(inp,k){
   r.readAsArrayBuffer(f);
 }
 
-// Rugalmas oszlopnév keresés - kezeli az ékezetes és szóközös neveket is
-function findCol(row, candidates){
-  for(const c of candidates){
-    if(row.hasOwnProperty(c)) return c;
-  }
-  // Normalizált keresés (ékezet nélkül, kisbetű)
-  const norm=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
-  const normCands=candidates.map(norm);
-  for(const k of Object.keys(row)){
-    const nk=norm(k);
-    if(normCands.includes(nk)) return k;
-  }
-  return null;
-}
-
 function nC(v){
   if(v==null)return'';
   const s=String(v).trim();
@@ -177,9 +168,7 @@ function nC(v){
   return s;
 }
 function rv(code,map,d){
-  d=d||0;if(d>=3)return code;
-  const n=map[code];if(!n||n===code)return code;
-  return rv(n,map,d+1);
+  d=d||0;if(d>=3)return code;const n=map[code];if(!n||n===code)return code;return rv(n,map,d+1);
 }
 function dv(n){
   n=Math.max(1,Math.floor(n));const s=new Set();
@@ -195,54 +184,38 @@ function rn(val,q){
   return b;
 }
 
-// Bolt készlet olvasás - rugalmas oszlopnév kezeléssel
-function rBolt(wb,csere,hint){
-  const sn=hint||wb.SheetNames.find(n=>n.toLowerCase().includes('bolt'))||wb.SheetNames[0];
-  const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{defval:''});
-  if(!rows.length) return {};
-  
-  // Oszlopnevek detektálása az első sorból
-  const sample=rows[0];
-  const boltCol=findCol(sample,['Bolt','bolt']);
-  const cikkCol=findCol(sample,['Cikkszám','Cikkszam','Cikk','Web cikk','Web_cikk','cikkszam']);
-  const mennyCol=findCol(sample,['Készlet menny.','Keszlet_menny','Készlet mennyiség','Keszlet menny','keszlet_menny','Keszlet']);
-  
-  lg('  '+sn+' | Bolt="'+boltCol+'" Cikk="'+cikkCol+'" Menny="'+mennyCol+'"','linf');
-  
+// Készlet sheet olvasása - megadott sheet névvel, ismert oszlopnevekkel
+function readSheet(wb, sheetName){
+  const ws=wb.Sheets[sheetName];
+  if(!ws){lg('  HIBA: nem találom: "'+sheetName+'"','lerr');return{};}
+  const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  if(!rows.length){lg('  ÜRES sheet: '+sheetName,'lwarn');return{};}
+  // Debug: első sor kulcsai
+  lg('  "'+sheetName+'" oszlopok: '+Object.keys(rows[0]).join(', '),'linf');
+  return rows;
+}
+
+function parseBolt(wb,csere,sheetName){
+  const rows=readSheet(wb,sheetName);
+  if(!rows.length)return{};
   const out={};
   for(const r of rows){
-    const bolt=boltCol?String(r[boltCol]||'').trim():'';
-    const cikkRaw=cikkCol?r[cikkCol]:null;
-    const cikk=rv(nC(cikkRaw),csere);
-    const m=mennyCol?(parseFloat(r[mennyCol])||0):0;
-    if(bolt&&cikk){const k=bolt+'|||'+cikk;out[k]=(out[k]||0)+m;}
+    const bolt=String(r[BOLT_COL]||'').trim();
+    const cikk=rv(nC(r[CIKK_COL]),csere);
+    const m=parseFloat(r[MENNY_COL])||0;
+    if(bolt&&cikk&&m>0){const k=bolt+'|||'+cikk;out[k]=(out[k]||0)+m;}
   }
   return out;
 }
 
-// Raktár olvasás - a 'kozponti raktar keszlet' sheet
-function rRakt(wb,csere){
-  // Pontosan ezeket a sheet neveket keressük
-  const sn=wb.SheetNames.find(n=>{
-    const l=n.toLowerCase();
-    return l.includes('raktar')||l.includes('raktár')||l.includes('kozponti')||l.includes('raktár');
-  })||wb.SheetNames[wb.SheetNames.length-1];
-  
-  const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{defval:''});
-  if(!rows.length) return {};
-  
-  const sample=rows[0];
-  const cikkCol=findCol(sample,['Cikkszám','Cikkszam','Web cikk','Web_cikk']);
-  const mennyCol=findCol(sample,['Készlet menny.','Keszlet_menny','Készlet mennyiség','Keszlet menny']);
-  
-  lg('  '+sn+' | Cikk="'+cikkCol+'" Menny="'+mennyCol+'"','linf');
-  
+function parseRaktar(wb,csere,sheetName){
+  const rows=readSheet(wb,sheetName);
+  if(!rows.length)return{};
   const out={};
   for(const r of rows){
-    const cikkRaw=cikkCol?r[cikkCol]:null;
-    const cikk=rv(nC(cikkRaw),csere);
-    const m=mennyCol?(parseFloat(r[mennyCol])||0):0;
-    if(cikk)out[cikk]=(out[cikk]||0)+m;
+    const cikk=rv(nC(r[CIKK_COL]),csere);
+    const m=parseFloat(r[MENNY_COL])||0;
+    if(cikk&&m>0)out[cikk]=(out[cikk]||0)+m;
   }
   return out;
 }
@@ -278,19 +251,21 @@ async function run(){
     const csere=F.csere?bCsere(F.csere.wb):D.csere;
     const cat=D.catalog;
     const opt=F.opt?rOpt(F.opt.wb,csere):D.optimalis;
-    lg('  Opt: '+Object.keys(opt).length+' termék','lok');
+    lg('  Opt: '+Object.keys(opt).length+' termék  Csere: '+Object.keys(csere).length,'lok');
 
-    lg('── HU bolt készlet ─────────────────────','linf');
-    const huSn=F.hu.wb.SheetNames.find(n=>n.toLowerCase().includes('bolt'))||F.hu.wb.SheetNames[0];
-    const huB=rBolt(F.hu.wb,csere,huSn);
+    // HU bolt - "boltok HU keszlet" sheet
+    lg('── HU bolt: "boltok HU keszlet" ───────','linf');
+    const huB=parseBolt(F.hu.wb,csere,'boltok HU keszlet');
     lg('  '+Object.keys(huB).length+' bolt×cikk sor','lok');
 
-    lg('── Raktár készlet ──────────────────────','linf');
-    const rakt=rRakt(F.hu.wb,csere);
+    // Raktár - "kozponti raktar keszlet" sheet
+    lg('── Raktár: "kozponti raktar keszlet" ──','linf');
+    const rakt=parseRaktar(F.hu.wb,csere,'kozponti raktar keszlet');
     lg('  '+Object.keys(rakt).length+' raktár tétel','lok');
 
-    lg('── SK bolt készlet ─────────────────────','linf');
-    const skB=rBolt(F.sk.wb,csere);
+    // SK bolt - első (és egyetlen) sheet
+    lg('── SK bolt: "'+F.sk.wb.SheetNames[0]+'" ──────────────','linf');
+    const skB=parseBolt(F.sk.wb,csere,F.sk.wb.SheetNames[0]);
     lg('  '+Object.keys(skB).length+' bolt×cikk sor','lok');
 
     const aB={...huB,...skB};
@@ -317,7 +292,7 @@ async function run(){
     const os=res.reduce((s,r)=>s+r.tot,0);
     lg('  '+res.length+' termék · '+hi+' hiányos · '+os.toLocaleString('hu-HU')+' db','lok');
 
-    lg('── Excel összeállítása ─────────────────','linf');
+    lg('── Excel ───────────────────────────────','linf');
     RWB=buildXL(res,rakt,aB,opt,cat);
     lg('── KÉSZ ────────────────────────────────','lok');
 
@@ -343,12 +318,10 @@ function buildXL(res,rakt,aB,opt,cat){
   const P1n=P1.length,P2n=P2.length,P3n=P3.length;
   const p2c=6+P1n,p3c=6+P1n+P2n,nC2=6+ALL.length;
   const sepIdx=res.findIndex(r=>r.rM<r.tot);
-
   function mkS(isOpt){
     const nR=res.length+2;
     const ws={'!ref':XLSX.utils.encode_range({s:{r:0,c:0},e:{r:nR-1,c:nC2-1}}),'!merges':[{s:{r:0,c:6},e:{r:0,c:6+P1n-1}},{s:{r:0,c:p2c},e:{r:0,c:p2c+P2n-1}},{s:{r:0,c:p3c},e:{r:0,c:p3c+P3n-1}}],'!freeze':{xSplit:6,ySplit:2}};
-    const cols=[{wch:9},{wch:11},{wch:40},{wch:10},{wch:13},{wch:13}];
-    ALL.forEach(()=>cols.push({wch:10}));ws['!cols']=cols;
+    const cols=[{wch:9},{wch:11},{wch:40},{wch:10},{wch:13},{wch:13}];ALL.forEach(()=>cols.push({wch:10}));ws['!cols']=cols;
     const rows=[{hpt:16},{hpt:36}];for(let i=0;i<res.length;i++)rows.push({hpt:16});ws['!rows']=rows;
     for(let c=0;c<6;c++)sc(ws,0,c,'',{fill:fi(C.h1),font:fo(1,'FFFFFF'),alignment:aa(),border:bo()});
     sc(ws,0,6,'P1 ('+P1n+' bolt)',{fill:fi(C.p1h),font:fo(1,'FFFFFF'),alignment:aa(),border:bo()});
@@ -374,16 +347,12 @@ function buildXL(res,rakt,aB,opt,cat){
       for(let ci=0;ci<P1n;ci++)sc(ws,er,6+ci,row.bk[P1[ci]]||null,{fill:fi(iH?C.hb:C.p1d),font:fo(),alignment:aa(),border:bo()});
       for(let ci=0;ci<P2n;ci++)sc(ws,er,p2c+ci,row.bk[P2[ci]]||null,{fill:fi(iH?C.hb:C.p2d),font:fo(),alignment:aa(),border:bo()});
       for(let ci=0;ci<P3n;ci++)sc(ws,er,p3c+ci,row.bk[P3[ci]]||null,{fill:fi(iH?C.hb:C.p3d),font:fo(),alignment:aa(),border:bo()});
-      if(ri===sepIdx&&sepIdx>0){
-        for(let c=0;c<nC2;c++){const a=XLSX.utils.encode_cell({r:er,c});if(ws[a]&&ws[a].s&&ws[a].s.border)ws[a].s.border.top={style:'medium',color:{rgb:'FFC00000'}};}
-      }
+      if(ri===sepIdx&&sepIdx>0){for(let c=0;c<nC2;c++){const a=XLSX.utils.encode_cell({r:er,c});if(ws[a]&&ws[a].s&&ws[a].s.border)ws[a].s.border.top={style:'medium',color:{rgb:'FFC00000'}};}}
     }
     return ws;
   }
   XLSX.utils.book_append_sheet(wb,mkS(0),'Kommissiólista');
   XLSX.utils.book_append_sheet(wb,mkS(1),'Optimális készlet');
-
-  // Bolt összefoglaló
   const bA=[['Ország','Bolt','Prioritás','Optimális (db)','Jelenlegi (db)','Kiküldendő (db)','Hiányos (#)','Nincs raktáron (#)']];
   const pM={};P1.forEach(s=>pM[s]='P1');P2.forEach(s=>pM[s]='P2');P3.forEach(s=>pM[s]='P3');
   for(let bi=0;bi<ALL.length;bi++){
@@ -402,12 +371,8 @@ function buildXL(res,rakt,aB,opt,cat){
   wsB['!cols']=[{wch:6},{wch:34},{wch:7},{wch:14},{wch:14},{wch:14},{wch:12},{wch:14}];
   wsB['!freeze']={xSplit:0,ySplit:1};
   XLSX.utils.book_append_sheet(wb,wsB,'Bolt összefoglaló');
-
-  // Raktár összefoglaló
   const rA=[['Szezon','Cikkszám','Megnevezés','Std.','Igény (db)','Raktár (db)','Küldhető','Hiányzó','Érintett bolt']];
-  for(const row of res){
-    rA.push([row.sz,row.cikk,row.nev,row.q,row.tot,row.rM,Math.min(row.rM,row.tot),Math.max(0,row.tot-row.rM),ALL.filter(s=>(row.bk[s]||0)>0).length]);
-  }
+  for(const row of res)rA.push([row.sz,row.cikk,row.nev,row.q,row.tot,row.rM,Math.min(row.rM,row.tot),Math.max(0,row.tot-row.rM),ALL.filter(s=>(row.bk[s]||0)>0).length]);
   const rH=rA.shift();rA.sort((a,b)=>b[7]-a[7]);rA.unshift(rH);
   const wsR=XLSX.utils.aoa_to_sheet(rA);
   for(let c=0;c<9;c++){const a=XLSX.utils.encode_cell({r:0,c});if(wsR[a])wsR[a].s={fill:fi(C.h1),font:fo(1,'FFFFFF'),alignment:aa('center','center',1),border:bo()};}
@@ -420,7 +385,6 @@ function buildXL(res,rakt,aB,opt,cat){
   XLSX.utils.book_append_sheet(wb,wsR,'Raktár összefoglaló');
   return wb;
 }
-
 function dl(){
   if(!RWB)return;
   const t=new Date();
@@ -432,10 +396,7 @@ document.querySelectorAll('.dz').forEach(dz=>{
   dz.addEventListener('drop',e=>{
     e.preventDefault();dz.classList.remove('over');
     const inp=dz.querySelector('input[type=file]');
-    if(inp&&e.dataTransfer.files.length){
-      const dt=new DataTransfer();dt.items.add(e.dataTransfer.files[0]);
-      inp.files=dt.files;inp.dispatchEvent(new Event('change'));
-    }
+    if(inp&&e.dataTransfer.files.length){const dt=new DataTransfer();dt.items.add(e.dataTransfer.files[0]);inp.files=dt.files;inp.dispatchEvent(new Event('change'));}
   });
 });
 </script>
